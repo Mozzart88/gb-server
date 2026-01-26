@@ -1,68 +1,107 @@
 import { DatabaseSync } from 'node:sqlite';
 import { resolve } from 'node:path';
 
-const DB_PATH = process.env.DB_PATH || resolve(process.cwd(), 'data.db');
+const DB_PATH = process.env.DB_PATH || resolve(process.cwd(), 'data/data.db');
 
 export interface Rate {
-    currency: string;
-    value: number;
-    timestamp: string;
+  code: string;
+  value: number;
+  timestamp: string;
+  date: string
+}
+
+export interface Currency {
+  id: number
+  code: string
+  name: string
+  symbol: string
+  crypto: boolean
 }
 
 export class DB {
-    private db: DatabaseSync;
+  private db: DatabaseSync;
 
-    constructor(path: string = DB_PATH) {
-        this.db = new DatabaseSync(path);
-        this.init();
+  constructor(path: string = DB_PATH) {
+    this.db = new DatabaseSync(path);
+    this.init()
+  }
+
+  setPath(path: string) {
+    if (this.db.isOpen)
+      this.db.close()
+    this.db = new DatabaseSync(path);
+    this.init()
+  }
+
+  private init() {
+    this.db.exec(`pragma foreign_keys=ON`)
+  }
+
+
+  saveRates(rates: Record<string, number>, date?: string) {
+    const targetDate = date || new Date().toISOString().split('T')[0];
+    const sql = `
+      INSERT OR REPLACE INTO rate (currency_id, value, date) VALUES
+        ((SELECT id  FROM currency WHERE code = upper(?)), ?, ?)`
+    const insert = this.db.prepare(sql);
+    for (const [currency, value] of Object.entries(rates)) {
+      insert.run(currency, value, targetDate);
     }
+  }
 
-    setPath(path: string) {
-        // node:sqlite DatabaseSync doesn't have a close() in current experimental version easily?
-        // Wait, it does have close() but it's not documented well or might be missing in some versions.
-        // Actually, let's just create a new instance and delegate.
-        this.db = new DatabaseSync(path);
-        this.init();
-    }
+  hasDataForDate(date: string): boolean {
+    const stmt = this.db.prepare('SELECT 1 FROM rates WHERE date = ? LIMIT 1');
+    const result = stmt.get(date);
+    return !!result;
+  }
 
-    private init() {
-        this.db.exec(`
-      CREATE TABLE IF NOT EXISTS rates (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        currency TEXT NOT NULL,
-        value REAL NOT NULL,
-        timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
-      )
-    `);
-        this.db.exec(`CREATE INDEX IF NOT EXISTS idx_currency ON rates(currency)`);
-        this.db.exec(`CREATE INDEX IF NOT EXISTS idx_timestamp ON rates(timestamp)`);
-    }
+  getCurrenies(crypto?: boolean): Currency[] {
+    const where = crypto !== undefined ? `WHERE crypto = ?` : ''
+    const sql = `SELECT * FROM currency ${where}`
+    const stmt = this.db.prepare(sql)
+    if (crypto === undefined)
+      return stmt.all() as unknown as Currency[]
+    return stmt.all(crypto ? 1 : 0) as unknown as Currency[]
+  }
 
-    saveRates(rates: Record<string, number>) {
-        const insert = this.db.prepare('INSERT INTO rates (currency, value) VALUES (?, ?)');
-        for (const [currency, value] of Object.entries(rates)) {
-            insert.run(currency, value);
-        }
-    }
-
-    getLatestRates(currencies?: string[]): Rate[] {
-        let query = `
-      SELECT currency, value, timestamp 
+  getRatesForDate(date: string, currencies?: string[]): Rate[] {
+    let query = `
+      SELECT code, value, timestamp, date
       FROM rates 
-      WHERE id IN (SELECT MAX(id) FROM rates GROUP BY currency)
+      WHERE date = ?
     `;
 
-        if (currencies && currencies.length > 0) {
-            const upperCurrencies = currencies.map(c => c.toUpperCase());
-            const placeholders = upperCurrencies.map(() => '?').join(',');
-            query += ` AND UPPER(currency) IN (${placeholders})`;
-            const stmt = this.db.prepare(query);
-            return stmt.all(...upperCurrencies) as unknown as Rate[];
-        }
-
-        const stmt = this.db.prepare(query);
-        return stmt.all() as unknown as Rate[];
+    if (currencies && currencies.length > 0) {
+      const upperCurrencies = currencies.map(c => c.toUpperCase());
+      const placeholders = upperCurrencies.map(() => '?').join(',');
+      query += ` AND code IN (${placeholders})`;
+      const stmt = this.db.prepare(query);
+      return stmt.all(date, ...upperCurrencies) as unknown as Rate[];
     }
+
+    const stmt = this.db.prepare(query);
+    return stmt.all(date) as unknown as Rate[];
+
+  }
+
+  getLatestRates(currencies?: string[]): Rate[] {
+    let query = `
+      SELECT code, value, timestamp, date
+      FROM rates 
+      WHERE date = (select date from rate order by date desc limit 1)
+    `;
+
+    if (currencies && currencies.length > 0) {
+      const upperCurrencies = currencies.map(c => c.toUpperCase());
+      const placeholders = upperCurrencies.map(() => '?').join(',');
+      query += ` AND code IN (${placeholders})`;
+      const stmt = this.db.prepare(query);
+      return stmt.all(...upperCurrencies) as unknown as Rate[];
+    }
+
+    const stmt = this.db.prepare(query);
+    return stmt.all() as unknown as Rate[];
+  }
 }
 
 export const db = new DB();

@@ -1,0 +1,8 @@
+services:
+  filler:
+    build: .
+    volumes:
+      - ./data:/app/data
+    env_file:
+      - .env
+    restart: always

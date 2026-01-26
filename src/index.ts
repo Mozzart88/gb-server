@@ -9,19 +9,15 @@ import { fetchLatestRates } from './client.js';
 import { fileURLToPath } from 'node:url';
 
 async function bootstrap() {
-    console.log('[App] Initializing...');
+  console.log('[App] Initializing...');
 
-    // Start the scheduler
-    startScheduler();
+  // Start the scheduler
+  startScheduler();
 
-    // Start the server
-    startServer();
-
-    // Optionally perform an initial fetch if DB is empty
-    console.log('[App] performing initial fetch...');
-    await fetchLatestRates();
+  // Start the server
+  startServer();
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
-    bootstrap().catch(console.error);
+  bootstrap().catch(console.error);
 }
