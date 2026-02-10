@@ -8,8 +8,9 @@ DEFAULT_DB_PATH = os.getenv("DB_PATH", os.path.join(os.getcwd(), "data/data.db")
 class DB:
     def __init__(self, path: str = DEFAULT_DB_PATH):
         self.path = path
-        # Ensure directory exists
-        os.makedirs(os.path.dirname(self.path), exist_ok=True)
+        # Ensure directory exists (skip for in-memory databases)
+        if self.path != ":memory:":
+            os.makedirs(os.path.dirname(self.path), exist_ok=True)
         self.conn = sqlite3.connect(self.path, check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
         self.init()
@@ -75,6 +76,42 @@ class DB:
             
         latest_date = last_date_row["date"]
         return self.get_rates_for_date(latest_date, currencies)
+
+    def get_installation_by_uuid(self, uuid: str) -> Optional[Dict[str, Any]]:
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT * FROM installations WHERE uuid = ?", (uuid,))
+        row = cursor.fetchone()
+        return dict(row) if row else None
+
+    def add_installation(self, uuid: str, jwt: str, installations: int = 1) -> None:
+        cursor = self.conn.cursor()
+        cursor.execute(
+            "INSERT INTO installations (uuid, jwt, installations) VALUES (?, ?, ?)",
+            (uuid, jwt, installations),
+        )
+        self.conn.commit()
+
+    def increment_installation_count(self, uuid: str) -> None:
+        cursor = self.conn.cursor()
+        cursor.execute(
+            "UPDATE installations SET installations = installations + 1 WHERE uuid = ?",
+            (uuid,),
+        )
+        self.conn.commit()
+
+    def update_installation_jwt(self, uuid: str, jwt: str) -> None:
+        cursor = self.conn.cursor()
+        cursor.execute(
+            "UPDATE installations SET jwt = ? WHERE uuid = ?",
+            (jwt, uuid),
+        )
+        self.conn.commit()
+
+    def get_installation_by_jwt(self, jwt: str) -> Optional[Dict[str, Any]]:
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT * FROM installations WHERE jwt = ?", (jwt,))
+        row = cursor.fetchone()
+        return dict(row) if row else None
 
     def close(self):
         self.conn.close()
