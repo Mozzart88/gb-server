@@ -1,0 +1,83 @@
+import sqlite3
+import os
+from datetime import datetime
+from typing import List, Optional, Dict, Any
+
+DEFAULT_DB_PATH = os.getenv("DB_PATH", os.path.join(os.getcwd(), "data/data.db"))
+
+class DB:
+    def __init__(self, path: str = DEFAULT_DB_PATH):
+        self.path = path
+        # Ensure directory exists
+        os.makedirs(os.path.dirname(self.path), exist_ok=True)
+        self.conn = sqlite3.connect(self.path, check_same_thread=False)
+        self.conn.row_factory = sqlite3.Row
+        self.init()
+
+    def init(self):
+        self.conn.execute("PRAGMA foreign_keys = ON")
+        # Ensure tables exist (optional if we assume data.db is pre-populated, 
+        # but good for robust code)
+        # Note: schema.sql is provided in the project root.
+
+    def save_rates(self, rates: Dict[str, float], date: Optional[str] = None):
+        target_date = date or datetime.now().strftime("%Y-%m-%d")
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        
+        cursor = self.conn.cursor()
+        sql = """
+            INSERT OR REPLACE INTO rate (date, currency_id, value, timestamp)
+            VALUES (?, (SELECT id FROM currency WHERE UPPER(code) = UPPER(?)), ?, ?)
+        """
+        
+        for currency, value in rates.items():
+            cursor.execute(sql, (target_date, currency, value, timestamp))
+        
+        self.conn.commit()
+
+    def has_data_for_date(self, date: str) -> bool:
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT 1 FROM rate WHERE date = ? LIMIT 1", (date,))
+        return cursor.fetchone() is not None
+
+    def get_currencies(self, crypto: Optional[bool] = None) -> List[Dict[str, Any]]:
+        query = "SELECT * FROM currency"
+        params = []
+        if crypto is not None:
+            query += " WHERE crypto = ?"
+            params.append(1 if crypto else 0)
+        
+        cursor = self.conn.cursor()
+        cursor.execute(query, params)
+        return [dict(row) for row in cursor.fetchall()]
+
+    def get_rates_for_date(self, date: str, currencies: Optional[List[str]] = None) -> List[Dict[str, Any]]:
+        query = "SELECT code, value, timestamp, date FROM rates WHERE date = ?"
+        params = [date]
+        
+        if currencies:
+            placeholders = ",".join(["?"] * len(currencies))
+            query += f" AND UPPER(code) IN ({placeholders})"
+            params.extend([c.upper() for c in currencies])
+            
+        cursor = self.conn.cursor()
+        cursor.execute(query, params)
+        return [dict(row) for row in cursor.fetchall()]
+
+    def get_latest_rates(self, currencies: Optional[List[str]] = None) -> List[Dict[str, Any]]:
+        # Find the latest date first
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT date FROM rate ORDER BY date DESC LIMIT 1")
+        last_date_row = cursor.fetchone()
+        
+        if not last_date_row:
+            return []
+            
+        latest_date = last_date_row["date"]
+        return self.get_rates_for_date(latest_date, currencies)
+
+    def close(self):
+        self.conn.close()
+
+# Singleton instance
+db = DB()

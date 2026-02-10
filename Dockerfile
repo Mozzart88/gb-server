@@ -1,39 +1,30 @@
-FROM node:alpine AS build
-
-# RUN npm install -g npm@11.8.0 tsc@latest
-RUN npm install -g tsc@latest
-
-WORKDIR /app
-
-COPY package*.json ./
-
-RUN npm ci
-
-COPY src ./src
-COPY tsconfig.json ./
-
-RUN npm run build
-
-FROM node:alpine AS runtime
-
+FROM python:3.13-slim
 ARG UID=1000
 ARG GID=1002
 
-# RUN npm install -g npm@11.8.0 tsc@latest
-RUN npm install -g tsc@latest
+RUN groupadd -g $GID appgroup && \
+    useradd -u $UID -g $GID -m appuser
 
 WORKDIR /app
 
-COPY package*.json ./
-RUN npm ci --omit=dev && npm cache clean --force
+# Install system dependencies if any are needed (e.g., for sqlite or others)
+# RUN apt-get update && apt-get install -y --no-install-recommends \
+#     ... && \
+#     rm -rf /var/lib/apt/lists/*
 
-COPY --from=build /app/dist ./dist
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
 
-RUN mkdir -p /app/data
+COPY src/ ./src/
+COPY data/ ./data/
+# Note: In production, you might want to mount data/ as a volume instead of copying
+# but for the first run or default state, copying is fine.
 
-RUN addgroup -g $GID app && adduser node app && chown -R node:app /app
-USER node
+# Ensure data directory exists and is writable
+RUN mkdir -p /app/data && chmod -R 777 /app && chown appuser:appgroup /app
+USER appuser
 
-EXPOSE 8002
+ENV PYTHONPATH=/app
+EXPOSE 3000
 
-CMD ["node", "dist/filler.js"]
+CMD ["python", "src/main.py"]
