@@ -1,9 +1,12 @@
 import sqlite3
 import os
+import json
+import uuid
 from datetime import datetime
 from typing import List, Optional, Dict, Any
 
 DEFAULT_DB_PATH = os.getenv("DB_PATH", os.path.join(os.getcwd(), "data/data.db"))
+
 
 class DB:
     def __init__(self, path: str = DEFAULT_DB_PATH):
@@ -17,23 +20,20 @@ class DB:
 
     def init(self):
         self.conn.execute("PRAGMA foreign_keys = ON")
-        # Ensure tables exist (optional if we assume data.db is pre-populated, 
-        # but good for robust code)
-        # Note: schema.sql is provided in the project root.
 
     def save_rates(self, rates: Dict[str, float], date: Optional[str] = None):
         target_date = date or datetime.now().strftime("%Y-%m-%d")
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        
+
         cursor = self.conn.cursor()
         sql = """
             INSERT OR REPLACE INTO rate (date, currency_id, value, timestamp)
             VALUES (?, (SELECT id FROM currency WHERE UPPER(code) = UPPER(?)), ?, ?)
         """
-        
+
         for currency, value in rates.items():
             cursor.execute(sql, (target_date, currency, value, timestamp))
-        
+
         self.conn.commit()
 
     def has_data_for_date(self, date: str) -> bool:
@@ -47,20 +47,22 @@ class DB:
         if crypto is not None:
             query += " WHERE crypto = ?"
             params.append(1 if crypto else 0)
-        
+
         cursor = self.conn.cursor()
         cursor.execute(query, params)
         return [dict(row) for row in cursor.fetchall()]
 
-    def get_rates_for_date(self, date: str, currencies: Optional[List[str]] = None) -> List[Dict[str, Any]]:
+    def get_rates_for_date(
+        self, date: str, currencies: Optional[List[str]] = None
+    ) -> List[Dict[str, Any]]:
         query = "SELECT code, value, timestamp, date FROM rates WHERE date = ?"
         params = [date]
-        
+
         if currencies:
             placeholders = ",".join(["?"] * len(currencies))
             query += f" AND UPPER(code) IN ({placeholders})"
             params.extend([c.upper() for c in currencies])
-            
+
         cursor = self.conn.cursor()
         cursor.execute(query, params)
         return [dict(row) for row in cursor.fetchall()]
@@ -70,10 +72,10 @@ class DB:
         cursor = self.conn.cursor()
         cursor.execute("SELECT date FROM rate ORDER BY date DESC LIMIT 1")
         last_date_row = cursor.fetchone()
-        
+
         if not last_date_row:
             return []
-            
+
         latest_date = last_date_row["date"]
         return self.get_rates_for_date(latest_date, currencies)
 
@@ -113,8 +115,125 @@ class DB:
         row = cursor.fetchone()
         return dict(row) if row else None
 
+    def save_package(
+        self,
+        sender_id: str,
+        iv: str,
+        ciphertext: str,
+        recipient_keys: List[Dict[str, str]],
+    ) -> str:
+        """Save an encrypted package and return its ID."""
+        package_id = str(uuid.uuid4())
+        cursor = self.conn.cursor()
+
+        # Store the package
+        params = (package_id, sender_id, iv, ciphertext, json.dumps(recipient_keys))
+        cursor.execute(
+            """INSERT INTO packages (id, sender_id, iv, ciphertext, recipient_keys)
+        VALUES (?, ?, ?, ?, ?)""",
+            params,
+        )
+
+        # Store recipient mappings for efficient querying
+        for recipient in recipient_keys:
+            params = (
+                package_id,
+                recipient["installation_id"],
+                recipient["encrypted_key"],
+            )
+            cursor.execute(
+                """INSERT INTO
+                        package_recipients
+                        (package_id, installation_id, encrypted_key)
+                   VALUES (?, ?, ?)""",
+                params,
+            )
+
+        self.conn.commit()
+        return package_id
+
+    def get_packages_for_installation(
+        self, installation_id: str, since: int
+    ) -> List[Dict[str, Any]]:
+        """Get all packages for an installation since a timestamp (milliseconds)."""
+        cursor = self.conn.cursor()
+
+        # Convert milliseconds to datetime
+        since_datetime = datetime.fromtimestamp(since / 1000.0).strftime("%Y-%m-%d %H:%M:%S.%f")
+
+        query = """
+            SELECT DISTINCT
+                p.id, p.sender_id, p.iv, p.ciphertext, p.recipient_keys
+            FROM packages p
+            JOIN package_recipients pr ON p.id = pr.package_id
+            WHERE pr.installation_id = ? AND p.updated_at > ?
+            ORDER BY p.updated_at ASC
+        """
+
+        cursor.execute(query, (installation_id, since_datetime))
+        rows = cursor.fetchall()
+
+        packages = []
+        for row in rows:
+            packages.append(
+                {
+                    "id": row["id"],
+                    "package": {
+                        "sender_id": row["sender_id"],
+                        "iv": row["iv"],
+                        "ciphertext": row["ciphertext"],
+                        "recipient_keys": json.loads(row["recipient_keys"]),
+                    },
+                }
+            )
+
+        return packages
+
+    def delete_packages(self, package_ids: List[str]) -> None:
+        """Delete packages by their IDs."""
+        if not package_ids:
+            return
+
+        cursor = self.conn.cursor()
+        placeholders = ",".join(["?"] * len(package_ids))
+        cursor.execute(f"DELETE FROM packages WHERE id IN ({placeholders})", package_ids)
+        self.conn.commit()
+
+    def save_handshake(self, uuid: str, payload: str):
+        """Save data to handshake"""
+        cursor = self.conn.cursor()
+        cursor.execute("INSERT INTO handshake (uuid, msg) values (?, ?)", (uuid, payload))
+        self.conn.commit()
+
+    def get_handshake(self, uuid: str):
+        """Get all data from handshake for uuid"""
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT id, msg, created_at FROM handshake WHERE uuid = ?", (uuid,))
+        rows = cursor.fetchall()
+        packages = []
+        for row in rows:
+            packages.append(
+                {
+                    "id": row["id"],
+                    "payload": row["msg"],
+                    "created_at": row["created_at"],
+                }
+            )
+
+        return packages
+
+    def delete_handshake(self, ids: List[int], uuid: str):
+        """Delete data from handshake by id and uuid"""
+        cursor = self.conn.cursor()
+        placeholders = ",".join(["?"] * len(ids))
+        cursor.execute(
+            f"DELETE FROM handshake WHERE id IN ({placeholders}) AND uuid = ?", (*ids, uuid)
+        )
+        self.conn.commit()
+
     def close(self):
         self.conn.close()
+
 
 # Singleton instance
 db = DB()

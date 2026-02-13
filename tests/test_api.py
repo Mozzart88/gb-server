@@ -55,7 +55,7 @@ def get_jwt_token(client: TestClient, new_uuid: str, uuid_to_increment: Optional
 
 def test_get_currencies_no_auth(client: TestClient):
     response = client.get("/currencies")
-    assert response.status_code == 401
+    assert response.status_code == 403
 
 def test_get_currencies_valid_auth(client: TestClient, db_session: DB):
     test_uuid = str(uuid.uuid4())
@@ -203,3 +203,121 @@ def test_jwt_authentication_with_expired_token(client: TestClient, db_session: D
 
     response = client.get("/latest", headers={"Authorization": f"Bearer {expired_token}"})
     assert response.status_code == 401 # Should fail due to expired token
+
+# --- Sync endpoint tests ---
+
+def make_push_payload(sender_id: str = "sender-1", recipient_ids: list = None):
+    if recipient_ids is None:
+        recipient_ids = ["install-a"]
+    return {
+        "package": {
+            "sender_id": sender_id,
+            "iv": "test-iv",
+            "ciphertext": "test-ciphertext",
+            "recipient_keys": [
+                {"installation_id": rid, "encrypted_key": f"key-for-{rid}"}
+                for rid in recipient_ids
+            ]
+        }
+    }
+
+def test_sync_push_no_auth(client: TestClient):
+    response = client.post("/sync/push", json=make_push_payload())
+    assert response.status_code == 403
+
+def test_sync_push_success(client: TestClient, db_session: DB):
+    token = get_jwt_token(client, str(uuid.uuid4()))
+    headers = {"Authorization": f"Bearer {token}"}
+    response = client.post("/sync/push", json=make_push_payload(), headers=headers)
+    assert response.status_code == 200
+    data = response.json()
+    assert data["success"] is True
+    assert "package_id" in data
+
+def test_sync_pull_no_auth(client: TestClient):
+    response = client.get("/sync/pull?installation_id=x")
+    assert response.status_code == 403
+
+def test_sync_pull_empty(client: TestClient, db_session: DB):
+    token = get_jwt_token(client, str(uuid.uuid4()))
+    headers = {"Authorization": f"Bearer {token}"}
+    response = client.get("/sync/pull?installation_id=unknown", headers=headers)
+    assert response.status_code == 200
+    assert response.json()["packages"] == []
+
+def test_sync_pull_returns_correct_packages(client: TestClient, db_session: DB):
+    token = get_jwt_token(client, str(uuid.uuid4()))
+    headers = {"Authorization": f"Bearer {token}"}
+
+    # Push a package for install-a and install-b
+    client.post("/sync/push", json=make_push_payload(recipient_ids=["install-a", "install-b"]), headers=headers)
+    # Push a package only for install-b
+    client.post("/sync/push", json=make_push_payload(recipient_ids=["install-b"]), headers=headers)
+
+    # install-a should see 1 package
+    resp_a = client.get("/sync/pull?installation_id=install-a", headers=headers)
+    assert len(resp_a.json()["packages"]) == 1
+
+    # install-b should see 2 packages
+    resp_b = client.get("/sync/pull?installation_id=install-b", headers=headers)
+    assert len(resp_b.json()["packages"]) == 2
+
+def test_sync_ack_no_auth(client: TestClient):
+    response = client.post("/sync/ack", json={"package_ids": []})
+    assert response.status_code == 403
+
+def test_sync_ack_deletes_packages(client: TestClient, db_session: DB):
+    token = get_jwt_token(client, str(uuid.uuid4()))
+    headers = {"Authorization": f"Bearer {token}"}
+
+    # Push
+    push_resp = client.post("/sync/push", json=make_push_payload(recipient_ids=["inst-1"]), headers=headers)
+    pkg_id = push_resp.json()["package_id"]
+
+    # Pull — should see the package
+    pull_resp = client.get("/sync/pull?installation_id=inst-1", headers=headers)
+    assert len(pull_resp.json()["packages"]) == 1
+
+    # Ack
+    ack_resp = client.post("/sync/ack", json={"package_ids": [pkg_id]}, headers=headers)
+    assert ack_resp.json()["success"] is True
+
+    # Pull again — should be empty
+    pull_resp2 = client.get("/sync/pull?installation_id=inst-1", headers=headers)
+    assert pull_resp2.json()["packages"] == []
+
+def test_sync_full_flow(client: TestClient, db_session: DB):
+    token = get_jwt_token(client, str(uuid.uuid4()))
+    headers = {"Authorization": f"Bearer {token}"}
+
+    # Push 2 packages for the same recipient
+    r1 = client.post("/sync/push", json=make_push_payload(sender_id="s1", recipient_ids=["device-x"]), headers=headers)
+    r2 = client.post("/sync/push", json=make_push_payload(sender_id="s2", recipient_ids=["device-x"]), headers=headers)
+    pid1 = r1.json()["package_id"]
+    pid2 = r2.json()["package_id"]
+
+    # Pull — 2 packages
+    pull = client.get("/sync/pull?installation_id=device-x", headers=headers)
+    assert len(pull.json()["packages"]) == 2
+
+    # Ack first package only
+    client.post("/sync/ack", json={"package_ids": [pid1]}, headers=headers)
+
+    # Pull — 1 package left
+    pull2 = client.get("/sync/pull?installation_id=device-x", headers=headers)
+    assert len(pull2.json()["packages"]) == 1
+    assert pull2.json()["packages"][0]["id"] == pid2
+
+    # Ack second package
+    client.post("/sync/ack", json={"package_ids": [pid2]}, headers=headers)
+
+    # Pull — empty
+    pull3 = client.get("/sync/pull?installation_id=device-x", headers=headers)
+    assert pull3.json()["packages"] == []
+
+def test_sync_ack_empty_list(client: TestClient, db_session: DB):
+    token = get_jwt_token(client, str(uuid.uuid4()))
+    headers = {"Authorization": f"Bearer {token}"}
+    response = client.post("/sync/ack", json={"package_ids": []}, headers=headers)
+    assert response.status_code == 200
+    assert response.json()["success"] is True
