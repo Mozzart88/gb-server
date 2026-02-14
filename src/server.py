@@ -9,6 +9,7 @@ from pydantic import BaseModel
 from typing import Optional, List
 from .db import db
 
+ENV = os.getenv("ENV", "dev")
 API_KEY = os.getenv("API_KEY")
 JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY")
 security = HTTPBearer()
@@ -82,7 +83,11 @@ async def verify_token(
         raise credentials_exception
 
 
-app = FastAPI(title="Exchange API")
+app = FastAPI(title="Exchange API",
+              docs_url="/docs" if ENV == "dev" else None,
+              redoc_url="/redoc" if ENV == "dev" else None,
+              openapi_url="/openapi.json" if ENV == "dev" else None,
+              )
 
 app.add_middleware(
     CORSMiddleware,
