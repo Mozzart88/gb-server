@@ -16,9 +16,21 @@ services:
     restart: always
     labels:
       - "traefik.enable=true"
-      - "traefik.http.routers.api.rule=Host(`ex.grossbuh.cloud`) || Host(`www.grossbuh.cloud`) || Host(`grossbuh.cloud`)"
+      - "traefik.http.routers.api.rule=Host(`ex.grossbuh.cloud`)"
       - "traefik.http.routers.api.entrypoints=websecure"
       - "traefik.http.routers.api.tls.certresolver=myresolver"
+
+  landing:
+    image: gb-landing-landing:latest
+
+    ports:
+      - "3080:3001"
+    restart: always
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.site.rule=Host(`www.grossbuh.cloud`) || Host(`grossbuh.cloud`)"
+      - "traefik.http.routers.site.entrypoints=websecure"
+      - "traefik.http.routers.site.tls.certresolver=myresolver"
 
   traefik:
     image: traefik:v3
