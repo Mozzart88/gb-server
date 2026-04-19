@@ -43,6 +43,7 @@ class SyncPushRequest(BaseModel):
 
 class SyncAckRequest(BaseModel):
     package_ids: List[str]
+    installation_id: str
 
 
 class SyncInitRequest(BaseModel):
@@ -216,7 +217,7 @@ async def sync_pull(
 @app.post("/sync/ack", dependencies=[Depends(verify_token)])
 async def sync_ack(request: SyncAckRequest, database=Depends(get_db)):
     try:
-        database.delete_packages(request.package_ids)
+        database.delete_packages(request.package_ids, request.installation_id)
         return {"success": True}
     except Exception as e:
         print(f"Error handling /sync/ack: {e}")

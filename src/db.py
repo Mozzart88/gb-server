@@ -189,14 +189,25 @@ class DB:
 
         return packages
 
-    def delete_packages(self, package_ids: List[str]) -> None:
-        """Delete packages by their IDs."""
+    def delete_packages(self, package_ids: List[str], installation_id: str) -> None:
+        """Remove acking device's recipient rows, then clean up orphaned packages."""
         if not package_ids:
             return
 
         cursor = self.conn.cursor()
         placeholders = ",".join(["?"] * len(package_ids))
-        cursor.execute(f"DELETE FROM packages WHERE id IN ({placeholders})", package_ids)
+
+        # Step 1: remove only this device's recipient rows
+        cursor.execute(
+            f"DELETE FROM package_recipients WHERE package_id IN ({placeholders}) AND installation_id = ?",
+            package_ids + [installation_id],
+        )
+
+        # Step 2: delete packages that have no remaining recipients
+        cursor.execute(
+            "DELETE FROM packages WHERE id NOT IN (SELECT DISTINCT package_id FROM package_recipients)"
+        )
+
         self.conn.commit()
 
     def save_handshake(self, uuid: str, payload: str):
