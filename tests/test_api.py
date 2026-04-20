@@ -361,3 +361,36 @@ def test_sync_ack_per_recipient(client: TestClient, db_session: DB):
     assert pull_a2.json()["packages"] == []
     pull_b2 = client.get("/sync/pull?installation_id=device-b", headers=headers)
     assert pull_b2.json()["packages"] == []
+
+
+# --- last_accessed_at tests ---
+
+def test_last_accessed_at_initially_none(client: TestClient, db_session: DB):
+    new_uuid = str(uuid.uuid4())
+    get_jwt_token(client, new_uuid)
+    installation = db_session.get_installation_by_uuid(new_uuid)
+    assert installation["last_accessed_at"] is None
+
+
+def test_last_accessed_at_set_after_request(client: TestClient, db_session: DB):
+    new_uuid = str(uuid.uuid4())
+    token = get_jwt_token(client, new_uuid)
+    client.get("/currencies", headers={"Authorization": f"Bearer {token}"})
+    installation = db_session.get_installation_by_uuid(new_uuid)
+    assert installation["last_accessed_at"] is not None
+
+
+def test_last_accessed_at_updates_on_repeated_requests(client: TestClient, db_session: DB):
+    new_uuid = str(uuid.uuid4())
+    token = get_jwt_token(client, new_uuid)
+    headers = {"Authorization": f"Bearer {token}"}
+
+    client.get("/currencies", headers=headers)
+    first = db_session.get_installation_by_uuid(new_uuid)["last_accessed_at"]
+
+    time.sleep(1)
+
+    client.get("/currencies", headers=headers)
+    second = db_session.get_installation_by_uuid(new_uuid)["last_accessed_at"]
+
+    assert second > first

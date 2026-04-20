@@ -20,6 +20,13 @@ class DB:
 
     def init(self):
         self.conn.execute("PRAGMA foreign_keys = ON")
+        try:
+            self.conn.execute(
+                "ALTER TABLE installations ADD COLUMN last_accessed_at DATETIME"
+            )
+            self.conn.commit()
+        except Exception:
+            pass
 
     def _apply_schema(self):
         """Apply the database schema idempotently (all statements use IF NOT EXISTS)."""
@@ -174,6 +181,13 @@ class DB:
         cursor.execute("SELECT * FROM installations WHERE jwt = ?", (jwt,))
         row = cursor.fetchone()
         return dict(row) if row else None
+
+    def touch_installation(self, jwt: str) -> None:
+        self.conn.execute(
+            "UPDATE installations SET last_accessed_at = CURRENT_TIMESTAMP WHERE jwt = ?",
+            (jwt,),
+        )
+        self.conn.commit()
 
     def save_package(
         self,

@@ -79,6 +79,7 @@ async def verify_token(
         if installation is None:
             raise credentials_exception
 
+        database.touch_installation(token)
         return jwt_from_payload
     except jwt.PyJWTError:
         raise credentials_exception
