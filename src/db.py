@@ -21,6 +21,66 @@ class DB:
     def init(self):
         self.conn.execute("PRAGMA foreign_keys = ON")
 
+    def _apply_schema(self):
+        """Apply the database schema idempotently (all statements use IF NOT EXISTS)."""
+        schema = """
+            CREATE TABLE IF NOT EXISTS currency (
+                id integer not null primary key autoincrement,
+                code text not null,
+                name text,
+                symbol text,
+                crypto bool not null default true
+            );
+            CREATE TABLE IF NOT EXISTS rate (
+                date DATE not null,
+                currency_id references currency(id),
+                value real not null,
+                timestamp DATETIME default CURRENT_TIMESTAMP,
+                UNIQUE(date, currency_id)
+            );
+            CREATE VIEW IF NOT EXISTS rates AS
+                SELECT date, currency.id, currency.code, value, timestamp
+                FROM rate LEFT JOIN currency ON rate.currency_id = currency.id;
+            CREATE INDEX IF NOT EXISTS idx_rate_date_currency_id ON rate(date, currency_id);
+            CREATE INDEX IF NOT EXISTS idx_rate_date ON rate(date);
+            CREATE TABLE IF NOT EXISTS packages (
+                id TEXT NOT NULL PRIMARY KEY,
+                sender_id TEXT NOT NULL,
+                iv TEXT NOT NULL,
+                ciphertext TEXT NOT NULL,
+                recipient_keys TEXT NOT NULL,
+                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE TABLE IF NOT EXISTS package_recipients (
+                package_id TEXT NOT NULL REFERENCES packages(id) ON DELETE CASCADE,
+                installation_id TEXT NOT NULL,
+                encrypted_key TEXT NOT NULL,
+                PRIMARY KEY (package_id, installation_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_package_recipients_installation ON package_recipients(installation_id);
+            CREATE INDEX IF NOT EXISTS idx_packages_updated_at ON packages(updated_at);
+            CREATE TABLE IF NOT EXISTS installations (
+                timestamp DATETIME not null default CURRENT_TIMESTAMP,
+                uuid text not null primary key,
+                jwt text not null,
+                installations integer not null default 1
+            );
+            CREATE TABLE IF NOT EXISTS handshake (
+                id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+                uuid TEXT REFERENCES installations(uuid) NOT NULL,
+                msg TEXT NOT NULL,
+                created_at INTEGER NOT NULL DEFAULT (unixepoch(CURRENT_TIMESTAMP))
+            );
+        """
+        # SQLite doesn't support multiple statements in one execute() call;
+        # split on semicolons and run each non-empty statement individually.
+        for statement in schema.split(";"):
+            stmt = statement.strip()
+            if stmt:
+                self.conn.execute(stmt)
+        self.conn.commit()
+
     def save_rates(self, rates: Dict[str, float], date: Optional[str] = None):
         target_date = date or datetime.now().strftime("%Y-%m-%d")
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
