@@ -394,3 +394,45 @@ def test_last_accessed_at_updates_on_repeated_requests(client: TestClient, db_se
     second = db_session.get_installation_by_uuid(new_uuid)["last_accessed_at"]
 
     assert second > first
+
+
+def test_delete_expired_handshakes(db_session: DB):
+    new_uuid = str(uuid.uuid4())
+    db_session.conn.execute(
+        "INSERT INTO installations (uuid, jwt) VALUES (?, ?)", (new_uuid, "tok")
+    )
+    db_session.conn.commit()
+
+    # Insert an expired handshake (created 7200 seconds ago)
+    db_session.conn.execute(
+        "INSERT INTO handshake (uuid, msg, created_at) VALUES (?, ?, unixepoch('now') - 7200)",
+        (new_uuid, "expired"),
+    )
+    # Insert a fresh handshake
+    db_session.conn.execute(
+        "INSERT INTO handshake (uuid, msg) VALUES (?, ?)",
+        (new_uuid, "fresh"),
+    )
+    db_session.conn.commit()
+
+    deleted = db_session.delete_expired_handshakes(timeout_seconds=3600)
+
+    assert deleted == 1
+    remaining = db_session.get_handshake(new_uuid)
+    assert len(remaining) == 1
+    assert remaining[0]["payload"] == "fresh"
+
+
+def test_handshake_timeout_env_default():
+    import importlib
+    import src.cleanup as cleanup_module
+
+    # The module-level default must be 3600 when env var is not set
+    original = os.environ.pop("HANDSHAKE_TIMEOUT", None)
+    try:
+        importlib.reload(cleanup_module)
+        assert cleanup_module.HANDSHAKE_TIMEOUT == 3600
+    finally:
+        if original is not None:
+            os.environ["HANDSHAKE_TIMEOUT"] = original
+        importlib.reload(cleanup_module)

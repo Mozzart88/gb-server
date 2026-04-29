@@ -316,6 +316,15 @@ class DB:
         )
         self.conn.commit()
 
+    def delete_expired_handshakes(self, timeout_seconds: int) -> int:
+        cursor = self.conn.cursor()
+        cursor.execute(
+            "DELETE FROM handshake WHERE created_at < (unixepoch('now') - ?)",
+            (timeout_seconds,),
+        )
+        self.conn.commit()
+        return cursor.rowcount
+
     def close(self):
         self.conn.close()
 
