@@ -1,5 +1,6 @@
 from src.filler import fill_missing_rates
 from src.scheduler import start_scheduler
+from src.cleanup import start_handshake_cleanup
 from src.server import app
 import asyncio
 import uvicorn
@@ -18,6 +19,9 @@ async def main():
 
     # Start the scheduler in background
     asyncio.create_task(start_scheduler())
+
+    # Start the handshake cleanup in background
+    asyncio.create_task(start_handshake_cleanup())
 
     # Start the FastAPI server (blocking)
     # Server should send CORS headers
