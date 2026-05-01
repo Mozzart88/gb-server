@@ -19,7 +19,7 @@ from src.db import DB # Import the DB class, not the singleton instance
 
 # Path to the schema.sql file
 SCRIPT_DIR = os.path.dirname(__file__)
-SCHEMA_PATH = os.path.join(SCRIPT_DIR, "../schema.sql")
+SCHEMA_PATH = os.path.join(SCRIPT_DIR, "../sql/schema.sql")
 
 @pytest.fixture(name="db_session")
 def db_session_fixture():
@@ -55,7 +55,7 @@ def get_jwt_token(client: TestClient, new_uuid: str, uuid_to_increment: Optional
 
 def test_get_currencies_no_auth(client: TestClient):
     response = client.get("/currencies")
-    assert response.status_code == 403
+    assert response.status_code == 401
 
 def test_get_currencies_valid_auth(client: TestClient, db_session: DB):
     test_uuid = str(uuid.uuid4())
@@ -223,7 +223,7 @@ def make_push_payload(sender_id: str = "sender-1", recipient_ids: list = None):
 
 def test_sync_push_no_auth(client: TestClient):
     response = client.post("/sync/push", json=make_push_payload())
-    assert response.status_code == 403
+    assert response.status_code == 401
 
 def test_sync_push_success(client: TestClient, db_session: DB):
     token = get_jwt_token(client, str(uuid.uuid4()))
@@ -236,7 +236,7 @@ def test_sync_push_success(client: TestClient, db_session: DB):
 
 def test_sync_pull_no_auth(client: TestClient):
     response = client.get("/sync/pull?installation_id=x")
-    assert response.status_code == 403
+    assert response.status_code == 401
 
 def test_sync_pull_empty(client: TestClient, db_session: DB):
     token = get_jwt_token(client, str(uuid.uuid4()))
@@ -263,8 +263,8 @@ def test_sync_pull_returns_correct_packages(client: TestClient, db_session: DB):
     assert len(resp_b.json()["packages"]) == 2
 
 def test_sync_ack_no_auth(client: TestClient):
-    response = client.post("/sync/ack", json={"package_ids": []})
-    assert response.status_code == 403
+    response = client.post("/sync/ack", json={"package_ids": [], "installation_id": "x"})
+    assert response.status_code == 401
 
 def test_sync_ack_deletes_packages(client: TestClient, db_session: DB):
     token = get_jwt_token(client, str(uuid.uuid4()))
@@ -279,7 +279,7 @@ def test_sync_ack_deletes_packages(client: TestClient, db_session: DB):
     assert len(pull_resp.json()["packages"]) == 1
 
     # Ack
-    ack_resp = client.post("/sync/ack", json={"package_ids": [pkg_id]}, headers=headers)
+    ack_resp = client.post("/sync/ack", json={"package_ids": [pkg_id], "installation_id": "inst-1"}, headers=headers)
     assert ack_resp.json()["success"] is True
 
     # Pull again — should be empty
@@ -301,7 +301,7 @@ def test_sync_full_flow(client: TestClient, db_session: DB):
     assert len(pull.json()["packages"]) == 2
 
     # Ack first package only
-    client.post("/sync/ack", json={"package_ids": [pid1]}, headers=headers)
+    client.post("/sync/ack", json={"package_ids": [pid1], "installation_id": "device-x"}, headers=headers)
 
     # Pull — 1 package left
     pull2 = client.get("/sync/pull?installation_id=device-x", headers=headers)
@@ -309,7 +309,7 @@ def test_sync_full_flow(client: TestClient, db_session: DB):
     assert pull2.json()["packages"][0]["id"] == pid2
 
     # Ack second package
-    client.post("/sync/ack", json={"package_ids": [pid2]}, headers=headers)
+    client.post("/sync/ack", json={"package_ids": [pid2], "installation_id": "device-x"}, headers=headers)
 
     # Pull — empty
     pull3 = client.get("/sync/pull?installation_id=device-x", headers=headers)
@@ -318,6 +318,121 @@ def test_sync_full_flow(client: TestClient, db_session: DB):
 def test_sync_ack_empty_list(client: TestClient, db_session: DB):
     token = get_jwt_token(client, str(uuid.uuid4()))
     headers = {"Authorization": f"Bearer {token}"}
-    response = client.post("/sync/ack", json={"package_ids": []}, headers=headers)
+    response = client.post("/sync/ack", json={"package_ids": [], "installation_id": "any"}, headers=headers)
     assert response.status_code == 200
     assert response.json()["success"] is True
+
+
+def test_sync_ack_per_recipient(client: TestClient, db_session: DB):
+    """Acking device A must not remove the package for device B."""
+    token = get_jwt_token(client, str(uuid.uuid4()))
+    headers = {"Authorization": f"Bearer {token}"}
+
+    # Push one package addressed to both device-a and device-b
+    push_resp = client.post(
+        "/sync/push",
+        json=make_push_payload(recipient_ids=["device-a", "device-b"]),
+        headers=headers,
+    )
+    pkg_id = push_resp.json()["package_id"]
+
+    # Device A acks
+    ack_resp = client.post(
+        "/sync/ack",
+        json={"package_ids": [pkg_id], "installation_id": "device-a"},
+        headers=headers,
+    )
+    assert ack_resp.json()["success"] is True
+
+    # Device B must still be able to pull the package
+    pull_b = client.get("/sync/pull?installation_id=device-b", headers=headers)
+    assert len(pull_b.json()["packages"]) == 1
+    assert pull_b.json()["packages"][0]["id"] == pkg_id
+
+    # Device B acks
+    client.post(
+        "/sync/ack",
+        json={"package_ids": [pkg_id], "installation_id": "device-b"},
+        headers=headers,
+    )
+
+    # Package should now be gone for both devices
+    pull_a2 = client.get("/sync/pull?installation_id=device-a", headers=headers)
+    assert pull_a2.json()["packages"] == []
+    pull_b2 = client.get("/sync/pull?installation_id=device-b", headers=headers)
+    assert pull_b2.json()["packages"] == []
+
+
+# --- last_accessed_at tests ---
+
+def test_last_accessed_at_initially_none(client: TestClient, db_session: DB):
+    new_uuid = str(uuid.uuid4())
+    get_jwt_token(client, new_uuid)
+    installation = db_session.get_installation_by_uuid(new_uuid)
+    assert installation["last_accessed_at"] is None
+
+
+def test_last_accessed_at_set_after_request(client: TestClient, db_session: DB):
+    new_uuid = str(uuid.uuid4())
+    token = get_jwt_token(client, new_uuid)
+    client.get("/currencies", headers={"Authorization": f"Bearer {token}"})
+    installation = db_session.get_installation_by_uuid(new_uuid)
+    assert installation["last_accessed_at"] is not None
+
+
+def test_last_accessed_at_updates_on_repeated_requests(client: TestClient, db_session: DB):
+    new_uuid = str(uuid.uuid4())
+    token = get_jwt_token(client, new_uuid)
+    headers = {"Authorization": f"Bearer {token}"}
+
+    client.get("/currencies", headers=headers)
+    first = db_session.get_installation_by_uuid(new_uuid)["last_accessed_at"]
+
+    time.sleep(1)
+
+    client.get("/currencies", headers=headers)
+    second = db_session.get_installation_by_uuid(new_uuid)["last_accessed_at"]
+
+    assert second > first
+
+
+def test_delete_expired_handshakes(db_session: DB):
+    new_uuid = str(uuid.uuid4())
+    db_session.conn.execute(
+        "INSERT INTO installations (uuid, jwt) VALUES (?, ?)", (new_uuid, "tok")
+    )
+    db_session.conn.commit()
+
+    # Insert an expired handshake (created 7200 seconds ago)
+    db_session.conn.execute(
+        "INSERT INTO handshake (uuid, msg, created_at) VALUES (?, ?, unixepoch('now') - 7200)",
+        (new_uuid, "expired"),
+    )
+    # Insert a fresh handshake
+    db_session.conn.execute(
+        "INSERT INTO handshake (uuid, msg) VALUES (?, ?)",
+        (new_uuid, "fresh"),
+    )
+    db_session.conn.commit()
+
+    deleted = db_session.delete_expired_handshakes(timeout_seconds=3600)
+
+    assert deleted == 1
+    remaining = db_session.get_handshake(new_uuid)
+    assert len(remaining) == 1
+    assert remaining[0]["payload"] == "fresh"
+
+
+def test_handshake_timeout_env_default():
+    import importlib
+    import src.cleanup as cleanup_module
+
+    # The module-level default must be 3600 when env var is not set
+    original = os.environ.pop("HANDSHAKE_TIMEOUT", None)
+    try:
+        importlib.reload(cleanup_module)
+        assert cleanup_module.HANDSHAKE_TIMEOUT == 3600
+    finally:
+        if original is not None:
+            os.environ["HANDSHAKE_TIMEOUT"] = original
+        importlib.reload(cleanup_module)

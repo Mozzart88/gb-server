@@ -20,6 +20,73 @@ class DB:
 
     def init(self):
         self.conn.execute("PRAGMA foreign_keys = ON")
+        try:
+            self.conn.execute(
+                "ALTER TABLE installations ADD COLUMN last_accessed_at DATETIME"
+            )
+            self.conn.commit()
+        except Exception:
+            pass
+
+    def _apply_schema(self):
+        """Apply the database schema idempotently (all statements use IF NOT EXISTS)."""
+        schema = """
+            CREATE TABLE IF NOT EXISTS currency (
+                id integer not null primary key autoincrement,
+                code text not null,
+                name text,
+                symbol text,
+                crypto bool not null default true
+            );
+            CREATE TABLE IF NOT EXISTS rate (
+                date DATE not null,
+                currency_id references currency(id),
+                value real not null,
+                timestamp DATETIME default CURRENT_TIMESTAMP,
+                UNIQUE(date, currency_id)
+            );
+            CREATE VIEW IF NOT EXISTS rates AS
+                SELECT date, currency.id, currency.code, value, timestamp
+                FROM rate LEFT JOIN currency ON rate.currency_id = currency.id;
+            CREATE INDEX IF NOT EXISTS idx_rate_date_currency_id ON rate(date, currency_id);
+            CREATE INDEX IF NOT EXISTS idx_rate_date ON rate(date);
+            CREATE TABLE IF NOT EXISTS packages (
+                id TEXT NOT NULL PRIMARY KEY,
+                sender_id TEXT NOT NULL,
+                iv TEXT NOT NULL,
+                ciphertext TEXT NOT NULL,
+                recipient_keys TEXT NOT NULL,
+                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE TABLE IF NOT EXISTS package_recipients (
+                package_id TEXT NOT NULL REFERENCES packages(id) ON DELETE CASCADE,
+                installation_id TEXT NOT NULL,
+                encrypted_key TEXT NOT NULL,
+                PRIMARY KEY (package_id, installation_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_package_recipients_installation ON package_recipients(installation_id);
+            CREATE INDEX IF NOT EXISTS idx_packages_updated_at ON packages(updated_at);
+            CREATE TABLE IF NOT EXISTS installations (
+                timestamp DATETIME not null default CURRENT_TIMESTAMP,
+                uuid text not null primary key,
+                jwt text not null,
+                installations integer not null default 1
+            );
+            CREATE TABLE IF NOT EXISTS handshake (
+                id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+                uuid TEXT REFERENCES installations(uuid) NOT NULL,
+                msg TEXT NOT NULL,
+                created_at INTEGER NOT NULL DEFAULT (unixepoch(CURRENT_TIMESTAMP))
+            );
+        """
+        # SQLite doesn't support multiple statements in one execute() call;
+        # split on semicolons and run each non-empty statement individually.
+        for statement in schema.split(";"):
+            stmt = statement.strip()
+            if stmt:
+                self.conn.execute(stmt)
+        self.conn.commit()
 
     def save_rates(self, rates: Dict[str, float], date: Optional[str] = None):
         target_date = date or datetime.now().strftime("%Y-%m-%d")
@@ -115,6 +182,13 @@ class DB:
         row = cursor.fetchone()
         return dict(row) if row else None
 
+    def touch_installation(self, jwt: str) -> None:
+        self.conn.execute(
+            "UPDATE installations SET last_accessed_at = CURRENT_TIMESTAMP WHERE jwt = ?",
+            (jwt,),
+        )
+        self.conn.commit()
+
     def save_package(
         self,
         sender_id: str,
@@ -189,14 +263,25 @@ class DB:
 
         return packages
 
-    def delete_packages(self, package_ids: List[str]) -> None:
-        """Delete packages by their IDs."""
+    def delete_packages(self, package_ids: List[str], installation_id: str) -> None:
+        """Remove acking device's recipient rows, then clean up orphaned packages."""
         if not package_ids:
             return
 
         cursor = self.conn.cursor()
         placeholders = ",".join(["?"] * len(package_ids))
-        cursor.execute(f"DELETE FROM packages WHERE id IN ({placeholders})", package_ids)
+
+        # Step 1: remove only this device's recipient rows
+        cursor.execute(
+            f"DELETE FROM package_recipients WHERE package_id IN ({placeholders}) AND installation_id = ?",
+            package_ids + [installation_id],
+        )
+
+        # Step 2: delete packages that have no remaining recipients
+        cursor.execute(
+            "DELETE FROM packages WHERE id NOT IN (SELECT DISTINCT package_id FROM package_recipients)"
+        )
+
         self.conn.commit()
 
     def save_handshake(self, uuid: str, payload: str):
@@ -230,6 +315,15 @@ class DB:
             f"DELETE FROM handshake WHERE id IN ({placeholders}) AND uuid = ?", (*ids, uuid)
         )
         self.conn.commit()
+
+    def delete_expired_handshakes(self, timeout_seconds: int) -> int:
+        cursor = self.conn.cursor()
+        cursor.execute(
+            "DELETE FROM handshake WHERE created_at < (unixepoch('now') - ?)",
+            (timeout_seconds,),
+        )
+        self.conn.commit()
+        return cursor.rowcount
 
     def close(self):
         self.conn.close()

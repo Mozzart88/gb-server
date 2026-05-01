@@ -21,7 +21,7 @@ CREATE TABLE IF NOT EXISTS package_recipients (
 );
 CREATE INDEX IF NOT EXISTS idx_package_recipients_installation ON package_recipients(installation_id);
 CREATE INDEX IF NOT EXISTS idx_packages_updated_at ON packages(updated_at);
-CREATE TABLE IF NOT EXISTS installations (timestamp DATETIME not null default CURRENT_TIMESTAMP, uuid text not null primary key, jwt text not null, installations integer not null default 1);
+CREATE TABLE IF NOT EXISTS installations (timestamp DATETIME not null default CURRENT_TIMESTAMP, uuid text not null primary key, jwt text not null, installations integer not null default 1, last_accessed_at DATETIME);
 CREATE TABLE IF NOT EXISTS handshake (
   id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
   uuid TEXT REFERENCES installations(uuid) NOT NULL,
