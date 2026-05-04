@@ -1,13 +1,16 @@
 import os
+import json
 import jwt
 import uuid
 from datetime import datetime, timedelta, timezone
 from fastapi import FastAPI, HTTPException, Query, Security, Depends
+from fastapi.responses import StreamingResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Optional, List
 from .db import db
+from .sse import sse_manager
 
 ENV = os.getenv("ENV", "dev")
 API_KEY = os.getenv("API_KEY")
@@ -197,10 +200,41 @@ async def sync_push(request: SyncPushRequest, database=Depends(get_db)):
             recipient_keys=recipient_keys_list,
         )
 
+        sse_manager.notify_many(
+            [rk.installation_id for rk in package.recipient_keys],
+            "package",
+            json.dumps({"package_id": package_id}),
+        )
         return {"success": True, "package_id": package_id}
     except Exception as e:
         print(f"Error handling /sync/push: {e}")
         raise HTTPException(status_code=500, detail="Internal Server Error")
+
+
+@app.get("/sync/events")
+async def sync_events(
+    installation_id: str = Query(...),
+    _=Depends(verify_token),
+    database=Depends(get_db),
+):
+    queue = sse_manager.connect(installation_id)
+
+    async def generator():
+        try:
+            async for chunk in sse_manager.event_generator(installation_id, queue):
+                yield chunk
+        finally:
+            sse_manager.disconnect(installation_id, queue)
+
+    return StreamingResponse(
+        generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        },
+    )
 
 
 @app.get("/sync/pull", dependencies=[Depends(verify_token)])
@@ -239,6 +273,7 @@ async def sync_init_get(uuid: str = Query(...), database=Depends(get_db)):
 async def sync_init_post(request: SyncInitRequest, database=Depends(get_db)):
     try:
         database.save_handshake(request.uuid, request.payload)
+        sse_manager.notify(request.uuid, "handshake")
         return {"success": True}
     except Exception as e:
         print(f"Error handling GET /sync/init: {e}")
