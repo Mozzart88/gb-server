@@ -280,6 +280,20 @@ async def sync_init_post(request: SyncInitRequest, database=Depends(get_db)):
         raise HTTPException(status_code=500, detail="Internal Server Error")
 
 
+@app.delete("/installation")
+async def delete_installation(
+    auth: HTTPAuthorizationCredentials = Security(security),
+    _: str = Depends(verify_token),
+    database=Depends(get_db),
+):
+    try:
+        database.delete_installation(auth.credentials)
+        return {"success": True}
+    except Exception as e:
+        print(f"Error handling DELETE /installation: {e}")
+        raise HTTPException(status_code=500, detail="Internal Server Error")
+
+
 @app.delete("/sync/init", dependencies=[Depends(verify_token)])
 async def sync_init_delete(request: SyncInitDelRequest, database=Depends(get_db)):
     try:
