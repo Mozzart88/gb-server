@@ -316,6 +316,10 @@ class DB:
         )
         self.conn.commit()
 
+    def delete_installation(self, jwt: str) -> None:
+        self.conn.execute("DELETE FROM installations WHERE jwt = ?", (jwt,))
+        self.conn.commit()
+
     def delete_expired_handshakes(self, timeout_seconds: int) -> int:
         cursor = self.conn.cursor()
         cursor.execute(
